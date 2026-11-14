@@ -1,0 +1,230 @@
+#include <Wire.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+
+hd44780_I2Cexp lcd;
+
+// LED and buzzer pins
+const int greenLED = 2;
+const int yellowLED = 3;
+const int redLED = 4;
+const int buzzer = 5;
+
+// Ultrasonic sensor pins
+const int trigPin = 6;
+const int echoPin = 7;
+
+// Water sensor
+const int waterPin = A0;
+
+// Distance thresholds (cm)
+const int safeDistance = 10;
+const int warningDistance = 5;
+
+// Water sensor calibration
+const int wetThreshold = 500;
+
+// true = higher reading means wet
+// false = lower reading means wet
+const bool wetWhenAbove = true;
+
+// Variables
+long duration;
+float distance = 0;
+int waterValue = 0;
+
+bool waterDetected = false;
+bool buzzerState = false;
+bool validDistance = false;
+
+String status = "STARTING";
+String command = "";
+
+// Control buzzer
+void setBuzzer(bool state) {
+  buzzerState = state;
+  digitalWrite(buzzer, state ? HIGH : LOW);
+}
+
+// Read commands from Raspberry Pi
+void receivePiCommand() {
+
+  while (Serial.available() > 0) {
+
+    char incoming = Serial.read();
+
+    if (incoming == '\n') {
+
+      command.trim();
+
+      if (command == "BUZZER_ON") {
+        setBuzzer(true);
+        Serial.println("ACK:BUZZER_ON");
+      }
+
+      else if (command == "BUZZER_OFF") {
+
+        if (status == "SAFE" || status == "NO WATER") {
+          setBuzzer(false);
+        }
+
+        Serial.println("ACK:BUZZER_OFF");
+      }
+
+      command = "";
+    }
+
+    else if (incoming != '\r' && command.length() < 30) {
+      command += incoming;
+    }
+  }
+}
+
+void setup() {
+
+  Serial.begin(9600);
+
+  pinMode(greenLED, OUTPUT);
+  pinMode(yellowLED, OUTPUT);
+  pinMode(redLED, OUTPUT);
+
+  pinMode(buzzer, OUTPUT);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  pinMode(waterPin, INPUT);
+
+  setBuzzer(false);
+
+  // Start LCD
+  lcd.begin(16, 2);
+  lcd.backlight();
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("GARAGE FLOOD");
+
+  lcd.setCursor(0, 1);
+  lcd.print("SYSTEM STARTED");
+
+  delay(2000);
+  lcd.clear();
+
+  Serial.println("ARDUINO_READY");
+}
+
+void loop() {
+
+  receivePiCommand();
+
+  // Read water sensor
+  waterValue = analogRead(waterPin);
+
+  if (wetWhenAbove) {
+    waterDetected = (waterValue >= wetThreshold);
+  }
+  else {
+    waterDetected = (waterValue <= wetThreshold);
+  }
+
+  // Read ultrasonic sensor
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(trigPin, LOW);
+
+  duration = pulseIn(echoPin, HIGH, 40000);
+
+  // Check whether distance reading is valid
+  validDistance = (duration > 0);
+
+  if (validDistance) {
+
+    distance = duration * 0.0343 / 2;
+
+    // Turn off LEDs before choosing status
+    digitalWrite(greenLED, LOW);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(redLED, LOW);
+
+    // No water detected
+    if (!waterDetected) {
+
+      if (distance <= warningDistance) {
+        status = "CHECK OBJECT";
+        digitalWrite(yellowLED, HIGH);
+      }
+      else {
+        status = "NO WATER";
+        digitalWrite(greenLED, HIGH);
+        setBuzzer(false);
+      }
+    }
+
+    // Water detected and safe
+    else if (distance > safeDistance) {
+
+      status = "SAFE";
+      digitalWrite(greenLED, HIGH);
+      setBuzzer(false);
+    }
+
+    // Warning level
+    else if (distance > warningDistance) {
+
+      status = "WARNING";
+      digitalWrite(yellowLED, HIGH);
+
+      // Keep previous buzzer state
+    }
+
+    // Danger level
+    else {
+
+      status = "DANGER";
+      digitalWrite(redLED, HIGH);
+      setBuzzer(true);
+    }
+
+  }
+
+  // LCD display
+  lcd.setCursor(0, 0);
+  lcd.print("Water: ");
+  lcd.print(waterDetected ? "YES " : "NO  ");
+  lcd.print("    ");
+
+  lcd.setCursor(0, 1);
+
+  if (validDistance) {
+    lcd.print(status);
+    lcd.print("            ");
+  }
+  else {
+    lcd.print("Waiting Echo   ");
+  }
+
+  // Send water readings to Raspberry Pi
+  Serial.print("WATER:");
+  Serial.println(waterDetected ? "YES" : "NO");
+
+  Serial.print("WATER_RAW:");
+  Serial.println(waterValue);
+
+  // Send distance only when valid
+  if (validDistance) {
+    Serial.print("DIST:");
+    Serial.println(distance);
+  }
+
+  Serial.print("STATUS:");
+  Serial.println(status);
+
+  receivePiCommand();
+
+  delay(300);
+}
