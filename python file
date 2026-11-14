@@ -1,0 +1,103 @@
+import serial
+import time
+from serial.tools import list_ports
+
+# Find Arduino automatically
+ports = [
+    p.device for p in list_ports.comports()
+    if p.device.startswith(("/dev/ttyACM", "/dev/ttyUSB"))
+]
+
+if not ports:
+    print("Arduino not found. Check USB connection.")
+    exit()
+
+PORT = ports[0]
+BAUD_RATE = 9600
+
+print("Connecting to Arduino:", PORT)
+
+try:
+    arduino = serial.Serial(PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)
+
+    print("SMART GARAGE FLOOD MONITOR STARTED")
+    print("--------------------------------")
+
+except serial.SerialException as error:
+    print("Connection error:", error)
+    exit()
+
+water = "UNKNOWN"
+distance = None
+status = "WAITING"
+
+last_command = None
+
+try:
+    while True:
+
+        line = arduino.readline().decode(
+            "utf-8", errors="ignore"
+        ).strip()
+
+        if not line:
+            continue
+
+        # Receive water detection
+        if line.startswith("WATER:"):
+            water = line.split(":", 1)[1]
+
+        # Receive raw water sensor reading
+        elif line.startswith("WATER_RAW:"):
+            water_raw = line.split(":", 1)[1]
+
+        # Receive ultrasonic distance
+        elif line.startswith("DIST:"):
+            try:
+                distance = float(line.split(":", 1)[1])
+            except ValueError:
+                distance = None
+
+        # Receive system status
+        elif line.startswith("STATUS:"):
+
+            status = line.split(":", 1)[1]
+
+            print("\n--------------------------------")
+            print("Water detected:", water)
+
+            if distance is not None:
+                print("Distance:", round(distance, 2), "cm")
+
+            print("System status:", status)
+
+            # Buzzer control
+            if status == "DANGER":
+                command = "BUZZER_ON"
+
+            elif status in ("SAFE", "NO WATER"):
+                command = "BUZZER_OFF"
+
+            else:
+                command = None
+
+            # Send command only when it changes
+            if command is not None and command != last_command:
+
+                arduino.write((command + "\n").encode())
+                arduino.flush()
+
+                print("Arduino command:", command)
+
+                last_command = command
+
+        elif line.startswith("ACK:"):
+            print(line)
+
+except KeyboardInterrupt:
+    print("\nFlood monitoring stopped.")
+
+finally:
+    arduino.close()
+    print("Arduino connection closed.")
